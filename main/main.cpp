@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -8,35 +9,138 @@
 #include "esp_err.h"
 #include "esp_log.h"
 
-#include "usb/usb_host.h"
-#include "usb/cdc_acm_host.h"
+#include "esp_loader.h"
+#include "esp32_usb_cdc_acm_port.h"
 
 #include <M5Unified.h>
 
 static const char *TAG = "ADV_FLASHER";
 
-static volatile int current_state = 0;
-static volatile int current_error = 0;
-
-static cdc_acm_dev_hdl_t cdc_dev = NULL;
-
-enum
+enum AppState
 {
     STATE_BOOT = 0,
     STATE_USB_STARTING,
-    STATE_USB_READY,
-    STATE_CDC_STARTING,
     STATE_WAITING_DEVICE,
-    STATE_DEVICE_OPENED,
-    STATE_LINE_CODING,
-    STATE_BOOT_PULSE,
-    STATE_READY,
-    STATE_DISCONNECTED,
+    STATE_CONNECTING,
+    STATE_SYNCING,
+    STATE_CONNECTED,
+    STATE_CHIP_DETECTED,
     STATE_ERROR
 };
 
+static volatile AppState current_state = STATE_BOOT;
+static volatile int current_error = 0;
+
+static char status_line_1[64] = "";
+static char status_line_2[64] = "";
+static char status_line_3[64] = "";
+
+static esp_loader_t loader;
+static esp32_usb_cdc_acm_port_t usb_port;
+
+static void copy_status(
+    char *destination,
+    size_t destination_size,
+    const char *source
+)
+{
+    if (destination == NULL || destination_size == 0)
+    {
+        return;
+    }
+
+    if (source == NULL)
+    {
+        destination[0] = '\0';
+        return;
+    }
+
+    snprintf(
+        destination,
+        destination_size,
+        "%s",
+        source
+    );
+}
+
+static void set_status(
+    AppState state,
+    const char *line1,
+    const char *line2,
+    const char *line3
+)
+{
+    current_state = state;
+
+    copy_status(
+        status_line_1,
+        sizeof(status_line_1),
+        line1
+    );
+
+    copy_status(
+        status_line_2,
+        sizeof(status_line_2),
+        line2
+    );
+
+    copy_status(
+        status_line_3,
+        sizeof(status_line_3),
+        line3
+    );
+}
+
+static void set_loader_error(
+    int error_code,
+    const char *stage
+)
+{
+    current_error = error_code;
+
+    char error_text[64];
+
+    snprintf(
+        error_text,
+        sizeof(error_text),
+        "ERROR: %d",
+        error_code
+    );
+
+    set_status(
+        STATE_ERROR,
+        stage,
+        error_text,
+        "Send me this screen"
+    );
+}
+
 static void draw_status(void)
 {
+    AppState state = current_state;
+
+    char line1[64];
+    char line2[64];
+    char line3[64];
+
+    copy_status(
+        line1,
+        sizeof(line1),
+        status_line_1
+    );
+
+    copy_status(
+        line2,
+        sizeof(line2),
+        status_line_2
+    );
+
+    copy_status(
+        line3,
+        sizeof(line3),
+        status_line_3
+    );
+
     M5.Display.fillScreen(TFT_BLACK);
 
     M5.Display.setTextColor(
@@ -53,390 +157,264 @@ static void draw_status(void)
     M5.Display.drawString(
         "ADV USB FLASHER",
         M5.Display.width() / 2,
-        14
+        13
     );
 
     M5.Display.drawFastHLine(
         5,
-        31,
+        30,
         M5.Display.width() - 10,
         TFT_WHITE
     );
 
+    if (state == STATE_ERROR)
+    {
+        M5.Display.setTextSize(2);
+
+        M5.Display.drawString(
+            line1,
+            M5.Display.width() / 2,
+            51
+        );
+
+        M5.Display.setTextSize(1);
+
+        M5.Display.drawString(
+            line2,
+            M5.Display.width() / 2,
+            79
+        );
+
+        M5.Display.drawString(
+            line3,
+            M5.Display.width() / 2,
+            108
+        );
+
+        return;
+    }
+
+    M5.Display.setTextSize(2);
+
+    M5.Display.drawString(
+        line1,
+        M5.Display.width() / 2,
+        50
+    );
+
     M5.Display.setTextSize(1);
 
-    switch (current_state)
+    M5.Display.drawString(
+        line2,
+        M5.Display.width() / 2,
+        79
+    );
+
+    M5.Display.drawString(
+        line3,
+        M5.Display.width() / 2,
+        106
+    );
+}
+
+static const char *target_name(
+    esp_loader_target_t target
+)
+{
+    switch (target)
     {
-        case STATE_BOOT:
-            M5.Display.drawString(
-                "BOOTING...",
-                M5.Display.width() / 2,
-                65
-            );
-            break;
+        case ESP8266_CHIP:
+            return "ESP8266";
 
-        case STATE_USB_STARTING:
-            M5.Display.drawString(
-                "STARTING USB HOST...",
-                M5.Display.width() / 2,
-                58
-            );
+        case ESP32_CHIP:
+            return "ESP32";
 
-            M5.Display.drawString(
-                "D- G19   D+ G20",
-                M5.Display.width() / 2,
-                82
-            );
-            break;
+        case ESP32S2_CHIP:
+            return "ESP32-S2";
 
-        case STATE_USB_READY:
-            M5.Display.drawString(
-                "USB HOST READY",
-                M5.Display.width() / 2,
-                58
-            );
+        case ESP32C3_CHIP:
+            return "ESP32-C3";
 
-            M5.Display.drawString(
-                "Starting serial driver...",
-                M5.Display.width() / 2,
-                82
-            );
-            break;
+        case ESP32S3_CHIP:
+            return "ESP32-S3";
 
-        case STATE_CDC_STARTING:
-            M5.Display.drawString(
-                "USB HOST READY",
-                M5.Display.width() / 2,
-                52
-            );
+        case ESP32C2_CHIP:
+            return "ESP32-C2";
 
-            M5.Display.drawString(
-                "STARTING CDC ACM...",
-                M5.Display.width() / 2,
-                76
-            );
-            break;
+        case ESP32H2_CHIP:
+            return "ESP32-H2";
 
-        case STATE_WAITING_DEVICE:
-            M5.Display.setTextSize(2);
+        case ESP32C6_CHIP:
+            return "ESP32-C6";
 
-            M5.Display.drawString(
-                "WAITING FOR",
-                M5.Display.width() / 2,
-                53
-            );
-
-            M5.Display.drawString(
-                "M5STICK...",
-                M5.Display.width() / 2,
-                79
-            );
-
-            M5.Display.setTextSize(1);
-
-            M5.Display.drawString(
-                "Plug into OTG port",
-                M5.Display.width() / 2,
-                110
-            );
-            break;
-
-        case STATE_DEVICE_OPENED:
-            M5.Display.setTextSize(2);
-
-            M5.Display.drawString(
-                "USB DEVICE",
-                M5.Display.width() / 2,
-                54
-            );
-
-            M5.Display.drawString(
-                "OPENED",
-                M5.Display.width() / 2,
-                80
-            );
-
-            M5.Display.setTextSize(1);
-
-            M5.Display.drawString(
-                "Configuring 115200...",
-                M5.Display.width() / 2,
-                110
-            );
-            break;
-
-        case STATE_LINE_CODING:
-            M5.Display.drawString(
-                "USB SERIAL READY",
-                M5.Display.width() / 2,
-                54
-            );
-
-            M5.Display.drawString(
-                "115200 8N1",
-                M5.Display.width() / 2,
-                76
-            );
-
-            M5.Display.drawString(
-                "Preparing boot pulse...",
-                M5.Display.width() / 2,
-                101
-            );
-            break;
-
-        case STATE_BOOT_PULSE:
-            M5.Display.setTextSize(2);
-
-            M5.Display.drawString(
-                "ENTERING",
-                M5.Display.width() / 2,
-                53
-            );
-
-            M5.Display.drawString(
-                "BOOTLOADER...",
-                M5.Display.width() / 2,
-                79
-            );
-
-            M5.Display.setTextSize(1);
-
-            M5.Display.drawString(
-                "DTR / RTS pulse",
-                M5.Display.width() / 2,
-                110
-            );
-            break;
-
-        case STATE_READY:
-            M5.Display.setTextSize(2);
-
-            M5.Display.drawString(
-                "USB SERIAL",
-                M5.Display.width() / 2,
-                48
-            );
-
-            M5.Display.drawString(
-                "READY",
-                M5.Display.width() / 2,
-                75
-            );
-
-            M5.Display.setTextSize(1);
-
-            M5.Display.drawString(
-                "CH9102 transport test OK",
-                M5.Display.width() / 2,
-                104
-            );
-
-            M5.Display.drawString(
-                "Next: ESP ROM sync",
-                M5.Display.width() / 2,
-                121
-            );
-            break;
-
-        case STATE_DISCONNECTED:
-            M5.Display.setTextSize(2);
-
-            M5.Display.drawString(
-                "DEVICE",
-                M5.Display.width() / 2,
-                53
-            );
-
-            M5.Display.drawString(
-                "DISCONNECTED",
-                M5.Display.width() / 2,
-                79
-            );
-            break;
-
-        case STATE_ERROR:
         default:
-        {
-            char error_text[40];
-
-            M5.Display.setTextSize(2);
-
-            M5.Display.drawString(
-                "ERROR",
-                M5.Display.width() / 2,
-                50
-            );
-
-            snprintf(
-                error_text,
-                sizeof(error_text),
-                "CODE: %d",
-                current_error
-            );
-
-            M5.Display.setTextSize(1);
-
-            M5.Display.drawString(
-                error_text,
-                M5.Display.width() / 2,
-                80
-            );
-
-            M5.Display.drawString(
-                "Send me this code",
-                M5.Display.width() / 2,
-                108
-            );
-
-            break;
-        }
+            return "UNKNOWN ESP";
     }
 }
 
-static void set_state(int state)
+static void flasher_task(void *argument)
 {
-    current_state = state;
-    draw_status();
-}
-
-static void set_error(esp_err_t error)
-{
-    current_error = (int)error;
-    current_state = STATE_ERROR;
-    draw_status();
-}
-
-static void usb_lib_task(void *arg)
-{
-    set_state(STATE_USB_STARTING);
-
-    const usb_host_config_t host_config = {
-        .skip_phy_setup = false,
-        .intr_flags = ESP_INTR_FLAG_LEVEL1,
-    };
-
-    esp_err_t err = usb_host_install(
-        &host_config
+    ESP_LOGI(
+        TAG,
+        "Starting ESP serial flasher"
     );
 
-    if (err != ESP_OK)
+    set_status(
+        STATE_USB_STARTING,
+        "STARTING USB",
+        "USB CDC ACM port",
+        "D- G19   D+ G20"
+    );
+
+    vTaskDelay(
+        pdMS_TO_TICKS(500)
+    );
+
+    memset(
+        &usb_port,
+        0,
+        sizeof(usb_port)
+    );
+
+    usb_port.port.ops = &esp32_usb_cdc_acm_ops;
+
+    usb_port.connection_timeout_ms = 0;
+    usb_port.out_buffer_size = 1024;
+    usb_port.in_buffer_size = 1024;
+
+    set_status(
+        STATE_WAITING_DEVICE,
+        "WAITING",
+        "Plug in M5StickC Plus2",
+        "USB OTG port"
+    );
+
+    esp_loader_error_t loader_error;
+
+    loader_error = esp_loader_init_serial(
+        &loader,
+        &usb_port.port
+    );
+
+    if (loader_error != ESP_LOADER_SUCCESS)
     {
         ESP_LOGE(
             TAG,
-            "USB host install failed: %s",
-            esp_err_to_name(err)
+            "esp_loader_init_serial failed: %d",
+            loader_error
         );
 
-        set_error(err);
+        set_loader_error(
+            loader_error,
+            "LOADER INIT"
+        );
 
         vTaskDelete(NULL);
         return;
     }
 
-    ESP_LOGI(
-        TAG,
-        "USB host installed"
+    set_status(
+        STATE_CONNECTING,
+        "DEVICE FOUND",
+        "Opening USB serial...",
+        "Preparing ESP ROM sync"
     );
 
-    set_state(STATE_USB_READY);
+    vTaskDelay(
+        pdMS_TO_TICKS(300)
+    );
 
-    while (1)
+    esp_loader_connect_args_t connect_args =
+        ESP_LOADER_CONNECT_DEFAULT();
+
+    set_status(
+        STATE_SYNCING,
+        "ROM SYNC",
+        "Entering download mode...",
+        "Connecting to ESP..."
+    );
+
+    ESP_LOGI(
+        TAG,
+        "Calling esp_loader_connect"
+    );
+
+    loader_error = esp_loader_connect(
+        &loader,
+        &connect_args
+    );
+
+    if (loader_error != ESP_LOADER_SUCCESS)
     {
-        uint32_t event_flags = 0;
-
-        err = usb_host_lib_handle_events(
-            portMAX_DELAY,
-            &event_flags
+        ESP_LOGE(
+            TAG,
+            "esp_loader_connect failed: %d",
+            loader_error
         );
 
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(
-                TAG,
-                "USB host event error: %s",
-                esp_err_to_name(err)
-            );
-        }
-    }
-}
+        set_loader_error(
+            loader_error,
+            "ROM SYNC FAILED"
+        );
 
-static void print_device_event(
-    const cdc_acm_host_dev_event_data_t *event,
-    void *user_ctx
-)
-{
-    if (event == NULL)
-    {
+        vTaskDelete(NULL);
         return;
     }
 
-    switch (event->type)
-    {
-        case CDC_ACM_HOST_ERROR:
-            ESP_LOGE(
-                TAG,
-                "CDC ACM error: %d",
-                event->data.error
-            );
-
-            current_error = event->data.error;
-            current_state = STATE_ERROR;
-            break;
-
-        case CDC_ACM_HOST_DEVICE_DISCONNECTED:
-            ESP_LOGW(
-                TAG,
-                "USB serial disconnected"
-            );
-
-            cdc_dev = NULL;
-            current_state = STATE_DISCONNECTED;
-            break;
-
-        case CDC_ACM_HOST_SERIAL_STATE:
-            ESP_LOGI(
-                TAG,
-                "Serial state: 0x%04x",
-                event->data.serial_state.val
-            );
-            break;
-
-        default:
-            ESP_LOGI(
-                TAG,
-                "CDC event: %d",
-                event->type
-            );
-            break;
-    }
-}
-
-static bool rx_callback(
-    const uint8_t *data,
-    size_t data_len,
-    void *user_arg
-)
-{
-    ESP_LOGI(
-        TAG,
-        "RX %u bytes",
-        (unsigned int)data_len
+    set_status(
+        STATE_CONNECTED,
+        "ROM CONNECTED",
+        "ESP bootloader synced",
+        "Detecting target..."
     );
 
-    printf("RX: ");
+    ESP_LOGI(
+        TAG,
+        "ESP ROM connected"
+    );
 
-    for (size_t i = 0; i < data_len; i++)
+    vTaskDelay(
+        pdMS_TO_TICKS(500)
+    );
+
+    esp_loader_target_t target =
+        esp_loader_get_target(
+            &loader
+        );
+
+    const char *chip_name =
+        target_name(
+            target
+        );
+
+    char chip_text[64];
+
+    snprintf(
+        chip_text,
+        sizeof(chip_text),
+        "TARGET: %s",
+        chip_name
+    );
+
+    ESP_LOGI(
+        TAG,
+        "Detected target: %s",
+        chip_name
+    );
+
+    set_status(
+        STATE_CHIP_DETECTED,
+        "CHIP DETECTED",
+        chip_text,
+        "ROM sync test PASSED"
+    );
+
+    while (1)
     {
-        printf(
-            "%02X ",
-            data[i]
+        vTaskDelay(
+            pdMS_TO_TICKS(1000)
         );
     }
-
-    printf("\n");
-
-    return true;
 }
 
 extern "C" void app_main(void)
@@ -446,24 +424,29 @@ extern "C" void app_main(void)
     M5.begin(cfg);
 
     M5.Display.setRotation(1);
-    M5.Display.setBrightness(180);
 
-    set_state(STATE_BOOT);
-
-    vTaskDelay(
-        pdMS_TO_TICKS(500)
+    M5.Display.setBrightness(
+        180
     );
 
-    ESP_LOGI(
-        TAG,
-        "Cardputer ADV USB flasher display probe"
+    set_status(
+        STATE_BOOT,
+        "BOOTING...",
+        "Cardputer ADV",
+        "ESP ROM sync tester"
+    );
+
+    draw_status();
+
+    vTaskDelay(
+        pdMS_TO_TICKS(700)
     );
 
     BaseType_t task_result =
         xTaskCreatePinnedToCore(
-            usb_lib_task,
-            "usb_lib",
-            4096,
+            flasher_task,
+            "flasher_task",
+            8192,
             NULL,
             10,
             NULL,
@@ -472,196 +455,23 @@ extern "C" void app_main(void)
 
     if (task_result != pdPASS)
     {
-        current_error = -100;
-        current_state = STATE_ERROR;
-
-        draw_status();
-
-        return;
-    }
-
-    while (
-        current_state != STATE_USB_READY &&
-        current_state != STATE_ERROR
-    )
-    {
-        vTaskDelay(
-            pdMS_TO_TICKS(50)
+        set_loader_error(
+            -1000,
+            "TASK CREATE"
         );
     }
 
-    if (current_state == STATE_ERROR)
-    {
-        return;
-    }
-
-    vTaskDelay(
-        pdMS_TO_TICKS(300)
-    );
-
-    set_state(STATE_CDC_STARTING);
-
-    const cdc_acm_host_driver_config_t driver_config = {
-        .driver_task_stack_size = 4096,
-        .driver_task_priority = 9,
-        .xCoreID = 1,
-        .new_dev_cb = NULL,
-    };
-
-    esp_err_t err = cdc_acm_host_install(
-        &driver_config
-    );
-
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(
-            TAG,
-            "CDC ACM install failed: %s",
-            esp_err_to_name(err)
-        );
-
-        set_error(err);
-        return;
-    }
-
-    ESP_LOGI(
-        TAG,
-        "CDC ACM driver installed"
-    );
-
-    set_state(STATE_WAITING_DEVICE);
-
-    const cdc_acm_host_device_config_t dev_config = {
-        .connection_timeout_ms = 0,
-        .out_buffer_size = 512,
-        .in_buffer_size = 512,
-        .event_cb = print_device_event,
-        .data_cb = rx_callback,
-        .user_arg = NULL,
-    };
-
-    err = cdc_acm_host_open(
-        CDC_HOST_ANY_VID,
-        CDC_HOST_ANY_PID,
-        0,
-        &dev_config,
-        &cdc_dev
-    );
-
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(
-            TAG,
-            "USB serial open failed: %s",
-            esp_err_to_name(err)
-        );
-
-        set_error(err);
-        return;
-    }
-
-    set_state(STATE_DEVICE_OPENED);
-
-    vTaskDelay(
-        pdMS_TO_TICKS(300)
-    );
-
-    cdc_acm_line_coding_t line_coding = {
-        .dwDTERate = 115200,
-        .bCharFormat = 0,
-        .bParityType = 0,
-        .bDataBits = 8,
-    };
-
-    err = cdc_acm_host_line_coding_set(
-        cdc_dev,
-        &line_coding
-    );
-
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(
-            TAG,
-            "Line coding failed: %s",
-            esp_err_to_name(err)
-        );
-
-        set_error(err);
-        return;
-    }
-
-    set_state(STATE_LINE_CODING);
-
-    vTaskDelay(
-        pdMS_TO_TICKS(500)
-    );
-
-    set_state(STATE_BOOT_PULSE);
-
-    err = cdc_acm_host_set_control_line_state(
-        cdc_dev,
-        false,
-        true
-    );
-
-    if (err != ESP_OK)
-    {
-        set_error(err);
-        return;
-    }
-
-    vTaskDelay(
-        pdMS_TO_TICKS(100)
-    );
-
-    err = cdc_acm_host_set_control_line_state(
-        cdc_dev,
-        true,
-        false
-    );
-
-    if (err != ESP_OK)
-    {
-        set_error(err);
-        return;
-    }
-
-    vTaskDelay(
-        pdMS_TO_TICKS(50)
-    );
-
-    err = cdc_acm_host_set_control_line_state(
-        cdc_dev,
-        false,
-        false
-    );
-
-    if (err != ESP_OK)
-    {
-        set_error(err);
-        return;
-    }
-
-    vTaskDelay(
-        pdMS_TO_TICKS(100)
-    );
-
-    set_state(STATE_READY);
-
-    ESP_LOGI(
-        TAG,
-        "READY FOR ESP SERIAL FLASHER INTEGRATION"
-    );
-
-    int last_drawn_state = current_state;
+    AppState last_state =
+        (AppState)-1;
 
     while (1)
     {
         M5.update();
 
-        if (current_state != last_drawn_state)
+        if (current_state != last_state)
         {
-            last_drawn_state = current_state;
+            last_state = current_state;
+
             draw_status();
         }
 
