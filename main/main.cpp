@@ -294,33 +294,22 @@ static void draw_status(void)
     }
 }
 
-static void set_state(
-    int state
-)
+static void set_state(int state)
 {
     current_state = state;
-
     draw_status();
 }
 
-static void set_error(
-    esp_err_t error
-)
+static void set_error(esp_err_t error)
 {
     current_error = (int)error;
-
     current_state = STATE_ERROR;
-
     draw_status();
 }
 
-static void usb_lib_task(
-    void *arg
-)
+static void usb_lib_task(void *arg)
 {
-    set_state(
-        STATE_USB_STARTING
-    );
+    set_state(STATE_USB_STARTING);
 
     const usb_host_config_t host_config = {
         .skip_phy_setup = false,
@@ -342,7 +331,6 @@ static void usb_lib_task(
         set_error(err);
 
         vTaskDelete(NULL);
-
         return;
     }
 
@@ -351,9 +339,7 @@ static void usb_lib_task(
         "USB host installed"
     );
 
-    set_state(
-        STATE_USB_READY
-    );
+    set_state(STATE_USB_READY);
 
     while (1)
     {
@@ -394,12 +380,8 @@ static void print_device_event(
                 event->data.error
             );
 
-            current_error =
-                event->data.error;
-
-            current_state =
-                STATE_ERROR;
-
+            current_error = event->data.error;
+            current_state = STATE_ERROR;
             break;
 
         case CDC_ACM_HOST_DEVICE_DISCONNECTED:
@@ -409,10 +391,7 @@ static void print_device_event(
             );
 
             cdc_dev = NULL;
-
-            current_state =
-                STATE_DISCONNECTED;
-
+            current_state = STATE_DISCONNECTED;
             break;
 
         case CDC_ACM_HOST_SERIAL_STATE:
@@ -421,7 +400,6 @@ static void print_device_event(
                 "Serial state: 0x%04x",
                 event->data.serial_state.val
             );
-
             break;
 
         default:
@@ -430,7 +408,6 @@ static void print_device_event(
                 "CDC event: %d",
                 event->type
             );
-
             break;
     }
 }
@@ -449,11 +426,7 @@ static bool rx_callback(
 
     printf("RX: ");
 
-    for (
-        size_t i = 0;
-        i < data_len;
-        i++
-    )
+    for (size_t i = 0; i < data_len; i++)
     {
         printf(
             "%02X ",
@@ -466,19 +439,16 @@ static bool rx_callback(
     return true;
 }
 
-void app_main(void)
+extern "C" void app_main(void)
 {
     auto cfg = M5.config();
 
     M5.begin(cfg);
 
     M5.Display.setRotation(1);
-
     M5.Display.setBrightness(180);
 
-    set_state(
-        STATE_BOOT
-    );
+    set_state(STATE_BOOT);
 
     vTaskDelay(
         pdMS_TO_TICKS(500)
@@ -503,7 +473,6 @@ void app_main(void)
     if (task_result != pdPASS)
     {
         current_error = -100;
-
         current_state = STATE_ERROR;
 
         draw_status();
@@ -521,9 +490,7 @@ void app_main(void)
         );
     }
 
-    if (
-        current_state == STATE_ERROR
-    )
+    if (current_state == STATE_ERROR)
     {
         return;
     }
@@ -532,9 +499,7 @@ void app_main(void)
         pdMS_TO_TICKS(300)
     );
 
-    set_state(
-        STATE_CDC_STARTING
-    );
+    set_state(STATE_CDC_STARTING);
 
     const cdc_acm_host_driver_config_t driver_config = {
         .driver_task_stack_size = 4096,
@@ -543,10 +508,9 @@ void app_main(void)
         .new_dev_cb = NULL,
     };
 
-    esp_err_t err =
-        cdc_acm_host_install(
-            &driver_config
-        );
+    esp_err_t err = cdc_acm_host_install(
+        &driver_config
+    );
 
     if (err != ESP_OK)
     {
@@ -557,7 +521,6 @@ void app_main(void)
         );
 
         set_error(err);
-
         return;
     }
 
@@ -566,9 +529,7 @@ void app_main(void)
         "CDC ACM driver installed"
     );
 
-    set_state(
-        STATE_WAITING_DEVICE
-    );
+    set_state(STATE_WAITING_DEVICE);
 
     const cdc_acm_host_device_config_t dev_config = {
         .connection_timeout_ms = 0,
@@ -596,13 +557,10 @@ void app_main(void)
         );
 
         set_error(err);
-
         return;
     }
 
-    set_state(
-        STATE_DEVICE_OPENED
-    );
+    set_state(STATE_DEVICE_OPENED);
 
     vTaskDelay(
         pdMS_TO_TICKS(300)
@@ -629,33 +587,26 @@ void app_main(void)
         );
 
         set_error(err);
-
         return;
     }
 
-    set_state(
-        STATE_LINE_CODING
-    );
+    set_state(STATE_LINE_CODING);
 
     vTaskDelay(
         pdMS_TO_TICKS(500)
     );
 
-    set_state(
-        STATE_BOOT_PULSE
-    );
+    set_state(STATE_BOOT_PULSE);
 
-    err =
-        cdc_acm_host_set_control_line_state(
-            cdc_dev,
-            false,
-            true
-        );
+    err = cdc_acm_host_set_control_line_state(
+        cdc_dev,
+        false,
+        true
+    );
 
     if (err != ESP_OK)
     {
         set_error(err);
-
         return;
     }
 
@@ -663,17 +614,15 @@ void app_main(void)
         pdMS_TO_TICKS(100)
     );
 
-    err =
-        cdc_acm_host_set_control_line_state(
-            cdc_dev,
-            true,
-            false
-        );
+    err = cdc_acm_host_set_control_line_state(
+        cdc_dev,
+        true,
+        false
+    );
 
     if (err != ESP_OK)
     {
         set_error(err);
-
         return;
     }
 
@@ -681,17 +630,15 @@ void app_main(void)
         pdMS_TO_TICKS(50)
     );
 
-    err =
-        cdc_acm_host_set_control_line_state(
-            cdc_dev,
-            false,
-            false
-        );
+    err = cdc_acm_host_set_control_line_state(
+        cdc_dev,
+        false,
+        false
+    );
 
     if (err != ESP_OK)
     {
         set_error(err);
-
         return;
     }
 
@@ -699,30 +646,22 @@ void app_main(void)
         pdMS_TO_TICKS(100)
     );
 
-    set_state(
-        STATE_READY
-    );
+    set_state(STATE_READY);
 
     ESP_LOGI(
         TAG,
         "READY FOR ESP SERIAL FLASHER INTEGRATION"
     );
 
-    int last_drawn_state =
-        current_state;
+    int last_drawn_state = current_state;
 
     while (1)
     {
         M5.update();
 
-        if (
-            current_state !=
-            last_drawn_state
-        )
+        if (current_state != last_drawn_state)
         {
-            last_drawn_state =
-                current_state;
-
+            last_drawn_state = current_state;
             draw_status();
         }
 
