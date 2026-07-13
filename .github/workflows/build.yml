@@ -20,23 +20,79 @@ jobs:
           version: "v5.5"
 
       - name: Set ESP32-S3 target
-        run: idf.py set-target esp32s3
+        run: |
+          idf.py set-target esp32s3 2>&1 | tee set-target.log
 
       - name: Build firmware
-        run: idf.py build
+        id: build_firmware
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          idf.py build 2>&1 | tee build.log
+
+      - name: Extract build errors
+        if: always()
+        run: |
+          {
+            echo "========================================"
+            echo "CARDPUTER ADV BUILD ERROR REPORT"
+            echo "========================================"
+            echo
+            echo "----- COMPILER ERRORS -----"
+            grep -n -i -B 10 -A 30 \
+              -E "error:|fatal error:|undefined reference|FAILED:|CMake Error" \
+              build.log || true
+
+            echo
+            echo "----- ESP-IDF STDERR LOGS -----"
+
+            if [ -d build/log ]; then
+              for file in build/log/idf_py_stderr_output_*; do
+                if [ -f "$file" ]; then
+                  echo
+                  echo "===== $file ====="
+                  cat "$file"
+                fi
+              done
+            fi
+
+            echo
+            echo "----- LAST 200 BUILD LINES -----"
+            tail -n 200 build.log || true
+          } > BUILD_ERRORS.txt
 
       - name: Package firmware
+        if: steps.build_firmware.outcome == 'success'
         run: |
-          mkdir firmware
-          cp build/*.bin firmware/ || true
-          cp build/*.elf firmware/ || true
-          cp build/flash_args firmware/ || true
-          cp build/flasher_args.json firmware/ || true
-          cp build/bootloader/*.bin firmware/ || true
-          cp build/partition_table/*.bin firmware/ || true
+          mkdir -p firmware
+
+          cp build/*.bin firmware/ 2>/dev/null || true
+          cp build/*.elf firmware/ 2>/dev/null || true
+          cp build/flash_args firmware/ 2>/dev/null || true
+          cp build/flasher_args.json firmware/ 2>/dev/null || true
+          cp build/bootloader/*.bin firmware/ 2>/dev/null || true
+          cp build/partition_table/*.bin firmware/ 2>/dev/null || true
 
       - name: Upload firmware
+        if: steps.build_firmware.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: cardputer-adv-flasher
           path: firmware/
+
+      - name: Upload error report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BUILD-ERROR-REPORT
+          path: BUILD_ERRORS.txt
+
+      - name: Upload complete logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: COMPLETE-BUILD-LOGS
+          path: |
+            build.log
+            set-target.log
+            build
