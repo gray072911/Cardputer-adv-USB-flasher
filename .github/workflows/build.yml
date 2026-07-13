@@ -19,6 +19,12 @@ jobs:
         with:
           version: "v5.5"
 
+      - name: Clean old build
+        run: |
+          rm -rf build
+          rm -f dependencies.lock
+          rm -rf managed_components
+
       - name: Set ESP32-S3 target
         run: |
           idf.py set-target esp32s3 2>&1 | tee set-target.log
@@ -39,6 +45,7 @@ jobs:
             echo "========================================"
             echo
             echo "----- COMPILER ERRORS -----"
+
             grep -n -i -B 10 -A 30 \
               -E "error:|fatal error:|undefined reference|FAILED:|CMake Error" \
               build.log || true
@@ -58,6 +65,7 @@ jobs:
 
             echo
             echo "----- LAST 200 BUILD LINES -----"
+
             tail -n 200 build.log || true
           } > BUILD_ERRORS.txt
 
@@ -95,4 +103,12 @@ jobs:
           path: |
             build.log
             set-target.log
-            build
+            build/log/
+          if-no-files-found: warn
+
+      - name: Fail workflow if build failed
+        if: steps.build_firmware.outcome == 'failure'
+        run: |
+          echo "Firmware build failed."
+          echo "Download BUILD-ERROR-REPORT."
+          exit 1
