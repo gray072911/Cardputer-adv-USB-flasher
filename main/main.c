@@ -1,8 +1,13 @@
 #include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
 #include "esp_err.h"
 #include "esp_log.h"
+
 #include "usb/usb_host.h"
 #include "usb/cdc_acm_host.h"
 
@@ -15,13 +20,25 @@ static void usb_lib_task(void *arg)
         .intr_flags = ESP_INTR_FLAG_LEVEL1,
     };
 
-    ESP_ERROR_CHECK(usb_host_install(&host_config));
+    esp_err_t err = usb_host_install(&host_config);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "USB host install failed: %s",
+            esp_err_to_name(err)
+        );
+
+        vTaskDelete(NULL);
+        return;
+    }
+
     ESP_LOGI(TAG, "USB host installed");
 
     while (1) {
         uint32_t event_flags = 0;
 
-        esp_err_t err = usb_host_lib_handle_events(
+        err = usb_host_lib_handle_events(
             portMAX_DELAY,
             &event_flags
         );
@@ -29,7 +46,7 @@ static void usb_lib_task(void *arg)
         if (err != ESP_OK) {
             ESP_LOGE(
                 TAG,
-                "usb_host_lib_handle_events: %s",
+                "usb_host_lib_handle_events failed: %s",
                 esp_err_to_name(err)
             );
         }
@@ -57,7 +74,7 @@ static void print_device_event(
         case CDC_ACM_HOST_DEVICE_DISCONNECTED:
             ESP_LOGW(
                 TAG,
-                "USB serial disconnected"
+                "USB serial device disconnected"
             );
             break;
 
@@ -88,8 +105,10 @@ static bool rx_callback(
     ESP_LOGI(
         TAG,
         "RX %u bytes",
-        (unsigned)data_len
+        (unsigned int)data_len
     );
+
+    printf("RX: ");
 
     for (size_t i = 0; i < data_len; i++) {
         printf("%02X ", data[i]);
@@ -109,10 +128,10 @@ void app_main(void)
 
     ESP_LOGI(
         TAG,
-        "USB D- GPIO19 / D+ GPIO20"
+        "USB OTG D- GPIO19 / D+ GPIO20"
     );
 
-    xTaskCreatePinnedToCore(
+    BaseType_t task_result = xTaskCreatePinnedToCore(
         usb_lib_task,
         "usb_lib",
         4096,
@@ -121,6 +140,15 @@ void app_main(void)
         NULL,
         0
     );
+
+    if (task_result != pdPASS) {
+        ESP_LOGE(
+            TAG,
+            "Failed to create USB library task"
+        );
+
+        return;
+    }
 
     vTaskDelay(
         pdMS_TO_TICKS(500)
@@ -133,11 +161,19 @@ void app_main(void)
         .new_dev_cb = NULL,
     };
 
-    ESP_ERROR_CHECK(
-        cdc_acm_host_install(
-            &driver_config
-        )
+    esp_err_t err = cdc_acm_host_install(
+        &driver_config
     );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "CDC ACM driver install failed: %s",
+            esp_err_to_name(err)
+        );
+
+        return;
+    }
 
     ESP_LOGI(
         TAG,
@@ -146,7 +182,7 @@ void app_main(void)
 
     ESP_LOGI(
         TAG,
-        "Waiting for CH9102 / USB serial device"
+        "Waiting for USB serial device"
     );
 
     cdc_acm_dev_hdl_t cdc_dev = NULL;
@@ -160,7 +196,7 @@ void app_main(void)
         .user_arg = NULL,
     };
 
-    esp_err_t err = cdc_acm_host_open(
+    err = cdc_acm_host_open(
         CDC_HOST_ANY_VID,
         CDC_HOST_ANY_PID,
         0,
@@ -177,7 +213,7 @@ void app_main(void)
 
         ESP_LOGE(
             TAG,
-            "CH9102 may need a vendor-specific USB transport"
+            "Unable to open USB serial interface"
         );
 
         return;
@@ -185,10 +221,114 @@ void app_main(void)
 
     ESP_LOGI(
         TAG,
-        "USB serial opened"
+        "USB serial device opened"
     );
 
     cdc_acm_line_coding_t line_coding = {
         .dwDTERate = 115200,
         .bCharFormat = 0,
-        .b
+        .bParityType = 0,
+        .bDataBits = 8,
+    };
+
+    err = cdc_acm_host_line_coding_set(
+        cdc_dev,
+        &line_coding
+    );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Line coding failed: %s",
+            esp_err_to_name(err)
+        );
+
+        return;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "Line coding set to 115200 8N1"
+    );
+
+    ESP_LOGI(
+        TAG,
+        "Sending ESP32 auto-download pulse"
+    );
+
+    err = cdc_acm_host_set_control_line_state(
+        cdc_dev,
+        false,
+        true
+    );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "DTR/RTS stage 1 failed: %s",
+            esp_err_to_name(err)
+        );
+
+        return;
+    }
+
+    vTaskDelay(
+        pdMS_TO_TICKS(100)
+    );
+
+    err = cdc_acm_host_set_control_line_state(
+        cdc_dev,
+        true,
+        false
+    );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "DTR/RTS stage 2 failed: %s",
+            esp_err_to_name(err)
+        );
+
+        return;
+    }
+
+    vTaskDelay(
+        pdMS_TO_TICKS(50)
+    );
+
+    err = cdc_acm_host_set_control_line_state(
+        cdc_dev,
+        false,
+        false
+    );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "DTR/RTS release failed: %s",
+            esp_err_to_name(err)
+        );
+
+        return;
+    }
+
+    vTaskDelay(
+        pdMS_TO_TICKS(100)
+    );
+
+    ESP_LOGI(
+        TAG,
+        "Auto-download pulse complete"
+    );
+
+    ESP_LOGI(
+        TAG,
+        "READY FOR ESP SERIAL FLASHER INTEGRATION"
+    );
+
+    while (1) {
+        vTaskDelay(
+            pdMS_TO_TICKS(1000)
+        );
+    }
+}
