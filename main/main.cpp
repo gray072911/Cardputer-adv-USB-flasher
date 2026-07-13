@@ -19,12 +19,9 @@ static const char *TAG = "ADV_FLASHER";
 enum AppState
 {
     STATE_BOOT = 0,
-    STATE_USB_STARTING,
     STATE_WAITING_DEVICE,
     STATE_CONNECTING,
-    STATE_SYNCING,
     STATE_CONNECTED,
-    STATE_CHIP_DETECTED,
     STATE_ERROR
 };
 
@@ -36,7 +33,6 @@ static char status_line_2[64] = "";
 static char status_line_3[64] = "";
 
 static esp_loader_t loader;
-static esp32_usb_cdc_acm_port_t usb_port;
 
 static void copy_status(
     char *destination,
@@ -217,70 +213,12 @@ static void draw_status(void)
     );
 }
 
-static const char *target_name(
-    esp_loader_target_t target
-)
-{
-    switch (target)
-    {
-        case ESP8266_CHIP:
-            return "ESP8266";
-
-        case ESP32_CHIP:
-            return "ESP32";
-
-        case ESP32S2_CHIP:
-            return "ESP32-S2";
-
-        case ESP32C3_CHIP:
-            return "ESP32-C3";
-
-        case ESP32S3_CHIP:
-            return "ESP32-S3";
-
-        case ESP32C2_CHIP:
-            return "ESP32-C2";
-
-        case ESP32H2_CHIP:
-            return "ESP32-H2";
-
-        case ESP32C6_CHIP:
-            return "ESP32-C6";
-
-        default:
-            return "UNKNOWN ESP";
-    }
-}
-
 static void flasher_task(void *argument)
 {
     ESP_LOGI(
         TAG,
-        "Starting ESP serial flasher"
+        "Starting ESP serial flasher v2 USB CDC ACM port"
     );
-
-    set_status(
-        STATE_USB_STARTING,
-        "STARTING USB",
-        "USB CDC ACM port",
-        "D- G19   D+ G20"
-    );
-
-    vTaskDelay(
-        pdMS_TO_TICKS(500)
-    );
-
-    memset(
-        &usb_port,
-        0,
-        sizeof(usb_port)
-    );
-
-    usb_port.port.ops = &esp32_usb_cdc_acm_ops;
-
-    usb_port.connection_timeout_ms = 0;
-    usb_port.out_buffer_size = 1024;
-    usb_port.in_buffer_size = 1024;
 
     set_status(
         STATE_WAITING_DEVICE,
@@ -289,24 +227,33 @@ static void flasher_task(void *argument)
         "USB OTG port"
     );
 
+    vTaskDelay(
+        pdMS_TO_TICKS(500)
+    );
+
     esp_loader_error_t loader_error;
 
-    loader_error = esp_loader_init_serial(
-        &loader,
-        &usb_port.port
+    ESP_LOGI(
+        TAG,
+        "Initializing USB CDC ACM flasher port"
     );
+
+    loader_error =
+        loader_port_esp32_usb_cdc_acm_init(
+            &loader
+        );
 
     if (loader_error != ESP_LOADER_SUCCESS)
     {
         ESP_LOGE(
             TAG,
-            "esp_loader_init_serial failed: %d",
+            "USB CDC ACM port init failed: %d",
             loader_error
         );
 
         set_loader_error(
             loader_error,
-            "LOADER INIT"
+            "USB PORT INIT"
         );
 
         vTaskDelete(NULL);
@@ -315,9 +262,9 @@ static void flasher_task(void *argument)
 
     set_status(
         STATE_CONNECTING,
-        "DEVICE FOUND",
-        "Opening USB serial...",
-        "Preparing ESP ROM sync"
+        "ROM SYNC",
+        "USB serial opened",
+        "Connecting to ESP..."
     );
 
     vTaskDelay(
@@ -326,13 +273,6 @@ static void flasher_task(void *argument)
 
     esp_loader_connect_args_t connect_args =
         ESP_LOADER_CONNECT_DEFAULT();
-
-    set_status(
-        STATE_SYNCING,
-        "ROM SYNC",
-        "Entering download mode...",
-        "Connecting to ESP..."
-    );
 
     ESP_LOGI(
         TAG,
@@ -361,52 +301,16 @@ static void flasher_task(void *argument)
         return;
     }
 
+    ESP_LOGI(
+        TAG,
+        "ESP ROM connected successfully"
+    );
+
     set_status(
         STATE_CONNECTED,
         "ROM CONNECTED",
         "ESP bootloader synced",
-        "Detecting target..."
-    );
-
-    ESP_LOGI(
-        TAG,
-        "ESP ROM connected"
-    );
-
-    vTaskDelay(
-        pdMS_TO_TICKS(500)
-    );
-
-    esp_loader_target_t target =
-        esp_loader_get_target(
-            &loader
-        );
-
-    const char *chip_name =
-        target_name(
-            target
-        );
-
-    char chip_text[64];
-
-    snprintf(
-        chip_text,
-        sizeof(chip_text),
-        "TARGET: %s",
-        chip_name
-    );
-
-    ESP_LOGI(
-        TAG,
-        "Detected target: %s",
-        chip_name
-    );
-
-    set_status(
-        STATE_CHIP_DETECTED,
-        "CHIP DETECTED",
-        chip_text,
-        "ROM sync test PASSED"
+        "Connection test PASSED"
     );
 
     while (1)
