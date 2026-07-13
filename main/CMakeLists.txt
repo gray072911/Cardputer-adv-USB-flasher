@@ -1,5 +1,7 @@
 idf_component_register(
     SRCS "main.cpp"
     INCLUDE_DIRS "."
-    REQUIRES M5Unified
+    REQUIRES
+        M5Unified
+        esp_serial_flasher
 )
