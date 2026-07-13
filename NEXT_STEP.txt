@@ -1,0 +1,21 @@
+NEXT HARDWARE TEST
+
+1. Build and flash this project to the Cardputer ADV with ESP-IDF 5.5+.
+2. Open the ADV serial monitor.
+3. Plug the M5StickC Plus2 into the OTG port.
+4. Send the complete log starting at:
+   "Waiting for CH9102 / USB serial device"
+
+If it reaches:
+   READY FOR ESP SERIAL FLASHER INTEGRATION
+
+the next revision can enable:
+- SD/FAT image browser
+- ESP Serial Flasher v2 USB CDC ACM port
+- ROM sync
+- chip detection
+- progress percentage
+- m5stack_cplus2.bin write
+
+If it says the device enumerates but CDC open fails, the CH9102 instance needs
+a vendor-specific USB serial transport instead of the generic CDC ACM host.
