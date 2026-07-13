@@ -22,8 +22,30 @@ jobs:
       - name: Clean old build
         run: |
           rm -rf build
-          rm -f dependencies.lock
           rm -rf managed_components
+          rm -rf components
+          rm -f dependencies.lock
+          rm -f sdkconfig
+
+      - name: Download M5GFX and M5Unified
+        run: |
+          mkdir -p components
+
+          git clone \
+            --depth 1 \
+            https://github.com/m5stack/M5GFX.git \
+            components/m5gfx
+
+          git clone \
+            --depth 1 \
+            https://github.com/m5stack/M5Unified.git \
+            components/M5Unified
+
+          echo "Downloaded local M5 components"
+
+          ls -la components
+          ls -la components/m5gfx
+          ls -la components/M5Unified
 
       - name: Set ESP32-S3 target
         run: |
@@ -64,9 +86,9 @@ jobs:
             fi
 
             echo
-            echo "----- LAST 200 BUILD LINES -----"
+            echo "----- LAST 300 BUILD LINES -----"
 
-            tail -n 200 build.log || true
+            tail -n 300 build.log || true
           } > BUILD_ERRORS.txt
 
       - name: Package firmware
