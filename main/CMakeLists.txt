@@ -3,5 +3,5 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES
         M5Unified
-        esp_serial_flasher
+        espressif__esp-serial-flasher
 )
