@@ -1,5 +1,15 @@
 dependencies:
-  idf: ">=5.5"
-  espressif/usb_host_cdc_acm: "*"
-  espressif/esp-serial-flasher: "^2.0.0"
-  m5stack/M5Unified: "*"
+  idf:
+    version: ">=5.5"
+
+  espressif/usb_host_cdc_acm:
+    version: "*"
+
+  espressif/esp-serial-flasher:
+    version: "^2.0.0"
+
+  m5stack/M5GFX:
+    version: "*"
+
+  m5stack/M5Unified:
+    version: "*"
