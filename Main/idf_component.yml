@@ -1,0 +1,4 @@
+dependencies:
+  idf: ">=5.5"
+  espressif/usb_host_cdc_acm: "*"
+  espressif/esp-serial-flasher: "^2.0.0"
