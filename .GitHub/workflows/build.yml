@@ -1,0 +1,42 @@
+name: Build Cardputer ADV Flasher
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Install ESP-IDF
+        uses: espressif/install-esp-idf-action@v1
+        with:
+          version: "v5.5"
+
+      - name: Set ESP32-S3 target
+        run: idf.py set-target esp32s3
+
+      - name: Build firmware
+        run: idf.py build
+
+      - name: Package firmware
+        run: |
+          mkdir firmware
+          cp build/*.bin firmware/ || true
+          cp build/*.elf firmware/ || true
+          cp build/flash_args firmware/ || true
+          cp build/flasher_args.json firmware/ || true
+          cp build/bootloader/*.bin firmware/ || true
+          cp build/partition_table/*.bin firmware/ || true
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: cardputer-adv-flasher
+          path: firmware/
